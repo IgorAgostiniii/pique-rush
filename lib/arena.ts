@@ -149,6 +149,8 @@ export class Arena {
     const dt=Math.min(.05,(time-this.lastTime)/1000||.016);this.lastTime=time;
     if(this.seed!==seed||this.team!==team)this.setTrack(seed,team);
     const lobby=mode==='lobby',small=this.width<700;
+    const fieldOfView=small&&!lobby?66:48;
+    if(this.camera.fov!==fieldOfView){this.camera.fov=fieldOfView;this.camera.updateProjectionMatrix();}
     if(p.hits!==this.lastHits||Math.abs(this.displayDistance-p.distance)>8||mode==='waiting'){this.displayDistance=p.distance;this.lastHits=p.hits;}else this.displayDistance=T.MathUtils.damp(this.displayDistance,p.distance,18,dt);
     const distance=lobby?0:this.displayDistance;
     for(const item of this.scenery)item.group.position.z=12-((12-item.z-distance)%154+154)%154;
@@ -167,7 +169,7 @@ export class Arena {
       for(const [i,a] of [this.runner,this.friend].entries()){const t=this.motionReduced?0:time*.002+i;a.body.position.y=Math.sin(t)*.045;a.body.rotation.z=Math.sin(t*.6)*.025;a.arms[0].rotation.x=-.18;a.arms[1].rotation.x=-.35;a.arms[1].rotation.z=-.18;a.legs[0].rotation.x=.05;a.legs[1].rotation.x=-.05;}
     }else{
       const avatar=team===0?this.runner:this.friend;
-      this.camera.position.lerp(new T.Vector3(0,small?5.5:5.2,small?10.5:10),1-Math.exp(-dt*7));this.camera.lookAt(0,1,-13);
+      this.camera.position.lerp(new T.Vector3(0,small?5.5:5.2,small?12:10),1-Math.exp(-dt*7));this.camera.lookAt(0,1,-13);
       this.laneX=T.MathUtils.damp(this.laneX,(p.lane-1)*2.8,16,dt);
       const hop=p.jump>0?Math.sin(Math.PI*(1-p.jump/.82))*1.9:0;
       avatar.root.position.set(this.laneX,hop,0);avatar.root.rotation.y=-(this.laneX-(p.lane-1)*2.8)*.12;avatar.root.scale.setScalar(1);
@@ -186,3 +188,4 @@ export class Arena {
   }
   dispose(){this.resize.disconnect();const geometries=new Set<T.BufferGeometry>();this.scene.traverse(o=>{if(o instanceof T.Mesh)geometries.add(o.geometry);});geometries.forEach(g=>g.dispose());this.materials.forEach(m=>m.dispose());this.renderer.dispose();}
 }
+
