@@ -17,6 +17,8 @@ export class Arena {
   private reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private disposed=false;
   private phase=0;
+  private previousJump=0; private landing=0; private impact=0;
+  private motionTime=0;
 
   constructor(private canvas:HTMLCanvasElement){
     const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)throw new Error('Canvas unavailable');this.ctx=ctx;
@@ -38,7 +40,12 @@ export class Arena {
   render(p:Runner,seed:number,team:number,time:number,mode:Mode,active:boolean){
     if(!this.loaded||this.disposed)return;
     const w=this.width,h=this.height,c=this.ctx,dt=Math.min(.05,(time-this.lastTime)/1000||.016);this.lastTime=time;
-    if(seed!==this.seed){this.seed=seed;this.items=obstacles(seed);}
+    if(seed!==this.seed){this.seed=seed;this.items=obstacles(seed);this.hits=p.hits;this.previousJump=0;this.landing=0;this.impact=0;}
+    if(p.hits>this.hits&&!this.reduced)this.impact=1;
+    if(this.previousJump>0&&p.jump===0&&p.stun===0&&!this.reduced)this.landing=1;
+    this.previousJump=p.jump;
+    this.landing=Math.max(0,this.landing-dt*4);this.impact=Math.max(0,this.impact-dt*3);
+    if(active&&!this.reduced)this.motionTime+=dt;
     if(p.hits!==this.hits||Math.abs(this.distance-p.distance)>8){this.distance=p.distance;this.hits=p.hits;}else this.distance+=(p.distance-this.distance)*(1-Math.exp(-dt*19));
     this.lane+=(p.lane-this.lane)*(1-Math.exp(-dt*17));
     c.clearRect(0,0,w,h);
@@ -56,7 +63,11 @@ export class Arena {
       return;
     }
     // The environment is painted; the road marks, sprites and particles move in perspective.
-    c.drawImage(this.images.street,0,0,w,h);
+    c.save();
+    if(this.impact>0)c.translate(Math.sin(time*.065)*this.impact*5,Math.cos(time*.08)*this.impact*3);
+    // Small camera drift adds life while keeping the collision track anchored.
+    const drift=this.reduced?0:(this.lane-1)*-3;
+    c.drawImage(this.images.street,-6+drift,-4,w+12,h+8);
     c.save();c.beginPath();c.moveTo(w*.495,h*.443);c.lineTo(w*.505,h*.443);c.lineTo(w*1.04,h);c.lineTo(-w*.04,h);c.closePath();c.clip();
     const road=c.createLinearGradient(0,h*.443,0,h);road.addColorStop(0,'rgba(244,220,170,0)');road.addColorStop(.2,'rgba(234,199,145,.25)');road.addColorStop(1,'rgba(222,181,129,.42)');c.fillStyle=road;c.fillRect(0,h*.443,w,h*.557);
     const travel=this.distance;
@@ -70,29 +81,35 @@ export class Arena {
     c.restore();
     const drawn:{z:number;draw:()=>void}[]=[];
     const target=p.distance<HALF?HALF:FINISH;
-    if(target-travel<108){const z=target-travel+16;drawn.push({z,draw:()=>{const v=this.point(1,z);this.shadow(v.x,v.y,w*.07*v.s);const sz=w*.40*v.s;this.sprite(this.images.props,2,p.distance<HALF?(team===0?0:1):(team===0?1:0),3,2,v.x,v.y,sz,sz);}});}
-    for(const o of this.items){const z=o.d-travel+16;if(z<8||z>112)continue;drawn.push({z,draw:()=>{const v=this.point(o.lane,z),sz=w*(o.high?.40:.38)*v.s;this.shadow(v.x,v.y,sz*.31);this.sprite(this.images.props,o.high?1:0,team===0?0:1,3,2,v.x,v.y,sz,sz);}});}
+    if(target-travel<108){const z=target-travel+16;drawn.push({z,draw:()=>{const v=this.point(1,z);this.shadow(v.x,v.y,w*.07*v.s);const sz=w*.40*v.s;c.save();c.translate(v.x,v.y);c.rotate(Math.sin(this.motionTime*4)*.035);this.sprite(this.images.props,2,p.distance<HALF?(team===0?0:1):(team===0?1:0),3,2,0,0,sz,sz);c.restore();}});}
+    for(const o of this.items){const z=o.d-travel+16;if(z< -16||z>112)continue;drawn.push({z,draw:()=>{const v=this.point(o.lane,z),sz=w*(o.high?.40:.38)*v.s;c.save();c.globalAlpha=Math.min(1,(112-z)/12,Math.max(0,(z+16)/12));this.shadow(v.x,v.y,sz*.31);this.sprite(this.images.props,o.high?1:0,team===0?0:1,3,2,v.x,v.y,sz,sz);c.restore();}});}
     const position=this.point(this.lane,16);
     const jump=p.jump>0?Math.sin(Math.PI*(1-p.jump/.82))*h*.125:0;
-    if(active)this.phase+=dt*10;
+    if(active&&p.stun===0&&!this.reduced)this.phase+=dt*8;
     drawn.push({z:16,draw:()=>{
       const size=Math.min(w*.40,h*.255),sw=size*.75;
       this.shadow(position.x,position.y,sw*.25*(1-jump/h),.20);
-      if(p.stun>0)c.globalAlpha=.45+Math.abs(Math.sin(time*.024))*.45;
-      const frame=p.jump>0?3:active&&!this.reduced?Math.floor(this.phase)%4:1;
-      const bob=active&&p.jump===0&&!this.reduced?Math.sin(this.phase*Math.PI/2)*1.8:0;
-      c.save();c.translate(position.x,position.y-jump+bob);c.rotate((p.lane-this.lane)*.075);
+      if(p.stun>0)c.globalAlpha=.65;
+      // The fourth atlas pose is a jump, not a running stride.
+      const frame=p.jump>0?3:active&&p.stun===0&&!this.reduced?[0,1,2,1][Math.floor(this.phase)%4]:1;
+      const stride=active&&p.stun===0&&p.jump===0&&!this.reduced?Math.sin(this.phase*Math.PI):0;
+      const bob=-Math.abs(stride)*3;
+      c.save();c.translate(position.x,position.y-jump+bob);c.rotate((p.lane-this.lane)*.14+stride*.015);
+      c.scale(1+this.landing*.09,1-this.landing*.10);
       this.sprite(this.images.runners,frame,team,4,2,0,0,sw,size);
-      if(p.distance>=HALF){const flagSize=size*.73;this.sprite(this.images.props,2,team===0?0:1,3,2,sw*.43,-size*.42,flagSize,flagSize);}
+      if(p.distance>=HALF){const flagSize=size*.73;c.save();c.translate(sw*.43,-size*.42);c.rotate(Math.sin(this.motionTime*9)*.07);this.sprite(this.images.props,2,team===0?0:1,3,2,0,0,flagSize,flagSize);c.restore();}
       c.restore();c.globalAlpha=1;
     }});
     drawn.sort((a,b)=>b.z-a.z).forEach(item=>item.draw());
-    if(active&&!this.reduced){
+    if(this.landing>0){const t=1-this.landing;c.strokeStyle=`rgba(255,238,195,${this.landing*.55})`;c.lineWidth=2;c.beginPath();c.ellipse(position.x,position.y,w*(.035+t*.10),h*(.004+t*.015),0,0,Math.PI*2);c.stroke();}
+    if(this.impact>0){for(let i=0;i<10;i++){const a=i*Math.PI/5,t=1-this.impact;c.fillStyle=`rgba(255,221,99,${this.impact})`;c.beginPath();c.arc(position.x+Math.cos(a)*t*w*.18,position.y-h*.1+Math.sin(a)*t*h*.10,2+this.impact*3,0,Math.PI*2);c.fill();}}
+    if(active&&p.stun===0&&p.jump===0&&!this.reduced){
       // Footfall dust and edge streaks make speed visible without obscuring the track.
       for(let i=0;i<8;i++){const t=(time*.002+i*.17)%1;const x=position.x+Math.sin(i*4)*w*.065*t,y=position.y+t*h*.05;c.fillStyle=`rgba(255,238,195,${(1-t)*.26})`;c.beginPath();c.ellipse(x,y,2+t*6,1+t*2,0,0,Math.PI*2);c.fill();}
       for(const side of [-1,1])for(let i=0;i<4;i++){const t=(time*.0007+i*.24)%1;c.strokeStyle=`rgba(255,255,240,${t*.22})`;c.lineWidth=1+t*2;c.beginPath();c.moveTo(w/2+side*w*(.38+t*.09),h*(.52+t*.28));c.lineTo(w/2+side*w*(.40+t*.12),h*(.55+t*.3));c.stroke();}
     }
-    if(mode==='done')for(let i=0;i<40;i++){const x=(Math.sin(i*93.3)*.5+.5)*w,y=((time*.05+i*39)%(h+30))-30;c.fillStyle=['#ffcd4c','#3e9fff','#ff687a','#fff8d8'][i%4];c.save();c.translate(x,y);c.rotate(time*.001+i);c.fillRect(-3,-5,6,10);c.restore();}
+    if(mode==='done'&&!this.reduced)for(let i=0;i<40;i++){const x=(Math.sin(i*93.3)*.5+.5)*w,y=((time*.05+i*39)%(h+30))-30;c.fillStyle=['#ffcd4c','#3e9fff','#ff687a','#fff8d8'][i%4];c.save();c.translate(x,y);c.rotate(time*.001+i);c.fillRect(-3,-5,6,10);c.restore();}
+    c.restore();
   }
   dispose(){this.disposed=true;this.observer.disconnect();}
 }
