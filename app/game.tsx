@@ -22,9 +22,9 @@ export default function Game(){
   useEffect(()=>{if(!session)return;let stopped=false,timer:ReturnType<typeof setTimeout>;async function tick(){try{const op=pending.current;const data=await request({...session,op,...input.current});if(stopped)return;if(pending.current===op)pending.current='sync';if(failures.current===0&&snapRef.current===null){input.current.lane=data.state.players[session!.team].lane;input.current.jumpSeq=data.state.players[session!.team].jumpSeq;}failures.current=0;setError('');accept(data);}catch(e){if(stopped)return;failures.current++;setError(e instanceof Error?e.message:'Conexão interrompida. Tentando novamente…');}if(!stopped)timer=setTimeout(tick,snapRef.current?.state.phase==='playing'?200:700);}void tick();return()=>{stopped=true;clearTimeout(timer);};},[session]);
   useEffect(()=>{const timer=setInterval(()=>setClock(Date.now()),100);const key=(e:KeyboardEvent)=>{if((e.target as HTMLElement).matches('input'))return;if(['ArrowLeft','ArrowRight','ArrowUp',' '].includes(e.key))e.preventDefault();if(e.repeat)return;if(e.key==='ArrowLeft'||e.key==='a')move(-1);if(e.key==='ArrowRight'||e.key==='d')move(1);if(e.key==='ArrowUp'||e.key===' ')jump();};window.addEventListener('keydown',key);return()=>{clearInterval(timer);window.removeEventListener('keydown',key);};},[]);
   useEffect(()=>{
-    const el=canvas.current;if(!el)return;let stopped=false,frame=0,arena:import('../lib/arena').Arena|undefined;
-    import('../lib/arena').then(({Arena})=>{
-      if(stopped)return;try{arena=new Arena(el);setSceneReady(true);}catch{setSceneError('Não foi possível iniciar o 3D. Tente abrir no Safari ou Chrome atualizado.');return;}
+    const el=canvas.current;if(!el)return;let stopped=false,frame=0,arena:import('../lib/illustrated-arena').Arena|undefined;
+    import('../lib/illustrated-arena').then(async ({Arena})=>{
+      if(stopped)return;try{arena=new Arena(el);await arena.ready;if(stopped){arena.dispose();return;}setSceneReady(true);}catch{setSceneError('Não foi possível carregar a arte do jogo. Confira sua internet e atualize a página.');return;}
       const render=(time:number)=>{
         const snap=snapRef.current,t=sessionRef.current?.team??0;
         let p:Runner={distance:0,lane:1,jump:0,jumpSeq:0,hits:0,stun:0,seen:0,name:'',vote:false};
@@ -43,7 +43,7 @@ export default function Game(){
   function leave(){sessionRef.current=null;snapRef.current=null;setSession(null);setSnapshot(null);setConfirmExit(false);setError('');pending.current='sync';input.current={lane:1,jumpSeq:0};try{sessionStorage.removeItem('pique-session');}catch{}}
   async function copy(){try{await navigator.clipboard.writeText(session!.code);setCopied(true);setTimeout(()=>setCopied(false),2000);}catch{setError('Selecione o código da sala e copie para enviar.');}}
   return <main className={`game ${session?'in-room':'lobby'} ${playing?'is-racing':''}`}>
-    <div className="world" aria-label="Cenário de corrida em 3D">
+    <div className="world" aria-label="Cenário ilustrado da corrida">
       <canvas ref={canvas} aria-label="Pista de três faixas. Deslize para os lados ou para cima para pular." onTouchStart={e=>{touch.current={x:e.touches[0].clientX,y:e.touches[0].clientY};}} onTouchEnd={e=>{const dx=e.changedTouches[0].clientX-touch.current.x,dy=e.changedTouches[0].clientY-touch.current.y;if(Math.max(Math.abs(dx),Math.abs(dy))<20)return;if(Math.abs(dx)>Math.abs(dy))move(dx>0?1:-1);else if(dy<0)jump();}}/>
       {!sceneReady&&<div className="scene-loading"><Flag size={36}/><p>{sceneError||'Preparando a pista…'}</p>{!sceneError&&<LoaderCircle className="spin" size={24}/>}</div>}
     </div>
