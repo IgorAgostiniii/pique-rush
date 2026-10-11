@@ -1,30 +1,47 @@
-import { HALF, FINISH, obstacles, type Obstacle, type Runner } from './race';
+import { pickups, obstacles, theme, type Obstacle, type Runner } from './race';
 import frames from './art-frames.json';
 
 type Mode='lobby'|'waiting'|'playing'|'done';
-type AssetName='street'|'runners'|'duel'|'props';
+type AssetName='overhead'|'street'|'runners'|'duel'|'props';
 
 /** Painted sprites with a perspective track. All collision positions come from the shared race engine. */
 export class Arena {
   readonly ready:Promise<void>;
   private ctx:CanvasRenderingContext2D;
   private images={} as Record<AssetName,HTMLImageElement>;
+  private streetLayer:HTMLCanvasElement|null=null;
   private width=0; private height=0;
   private distance=0; private lane=1; private lastTime=0; private hits=0;
-  private seed=-1; private items:Obstacle[]=[];
+  private cameraDistance=0;
+  private section=-1; private seed=-1; private items:Obstacle[]=[];
   private observer:ResizeObserver;
   private loaded=false;
   private reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   private disposed=false;
   private phase=0;
+  private collectedCoins=0; private collectedFlags=0;
+  private rewards:{life:number;flag:boolean;x:number;y:number}[]=[];
   private previousJump=0; private landing=0; private impact=0;
   private motionTime=0;
 
   constructor(private canvas:HTMLCanvasElement){
     const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)throw new Error('Canvas unavailable');this.ctx=ctx;
-    this.ready=Promise.all((['street','runners','duel','props'] as AssetName[]).map(name=>new Promise<void>((resolve,reject)=>{
+    this.ready=Promise.all((['overhead','street','runners','duel','props'] as AssetName[]).map(name=>new Promise<void>((resolve,reject)=>{
       const image=new Image();image.onload=()=>{this.images[name]=image;resolve();};image.onerror=()=>reject(new Error(`Could not load ${name}`));image.src=`/art/${name}.webp`;
-    }))).then(()=>{this.loaded=true;});
+    }))).then(()=>{
+      // Cache the feathered leading edge once. Adjacent copies overlap rather
+      // than exposing the unrelated top/bottom edges of the painting.
+      const source=this.images.overhead,layer=document.createElement('canvas');
+      layer.width=source.width;layer.height=source.height;
+      const brush=layer.getContext('2d')!;
+      brush.drawImage(source,0,0);
+      brush.globalCompositeOperation='destination-in';
+      const fade=brush.createLinearGradient(0,0,0,source.height*.18);
+      fade.addColorStop(0,'rgba(0,0,0,0)');
+      fade.addColorStop(1,'rgba(0,0,0,1)');
+      brush.fillStyle=fade;brush.fillRect(0,0,source.width,source.height);
+      this.streetLayer=layer;this.loaded=true;
+    });
     this.observer=new ResizeObserver(()=>this.fit());this.observer.observe(canvas);this.fit();
   }
   private fit(){const r=this.canvas.getBoundingClientRect();this.width=r.width;this.height=r.height;const dpr=Math.min(devicePixelRatio||1,2);this.canvas.width=Math.round(r.width*dpr);this.canvas.height=Math.round(r.height*dpr);this.ctx.setTransform(dpr,0,0,dpr,0,0);this.ctx.imageSmoothingEnabled=true;this.ctx.imageSmoothingQuality='high';}
@@ -35,18 +52,29 @@ export class Arena {
     const dw=f.w*scale,dh=f.h*scale;this.ctx.drawImage(img,f.x,f.y,f.w,f.h,x-dw/2,y-dh,dw,dh);
   }
   private path(points:number[][],fill:string){const c=this.ctx;c.beginPath();points.forEach(([x,y],i)=>i?c.lineTo(x,y):c.moveTo(x,y));c.closePath();c.fillStyle=fill;c.fill();}
-  private point(lane:number,z:number){const w=this.width,h=this.height;const t=Math.max(0,Math.min(1.22,1-z/115));const q=t*t;return {x:w/2+(lane-1)*w*.32*(.12+.88*q),y:h*.443+h*.557*q,s:.1+.9*q};}
+  private point(lane:number,z:number){return {x:this.width*(.5+(lane-1)*.23),y:this.height*(.94-z/110),s:1};}
   private shadow(x:number,y:number,w:number,alpha=.16){const c=this.ctx;c.fillStyle=`rgba(79,56,36,${alpha})`;c.beginPath();c.ellipse(x,y,w,w*.24,0,0,Math.PI*2);c.fill();}
-  render(p:Runner,seed:number,team:number,time:number,mode:Mode,active:boolean){
+  render(p:Runner,seed:number,team:number,time:number,mode:Mode,active:boolean,skin=0){
     if(!this.loaded||this.disposed)return;
     const w=this.width,h=this.height,c=this.ctx,dt=Math.min(.05,(time-this.lastTime)/1000||.016);this.lastTime=time;
-    if(seed!==this.seed){this.seed=seed;this.items=obstacles(seed);this.hits=p.hits;this.previousJump=0;this.landing=0;this.impact=0;}
+    if(seed!==this.seed){this.seed=seed;this.items=obstacles(seed,p.distance);this.hits=p.hits;this.previousJump=0;this.landing=0;this.impact=0;this.cameraDistance=Math.max(0,p.distance-13);this.collectedCoins=p.coins??0;this.collectedFlags=p.flags??0;this.rewards=[];}
+    if(Math.floor(p.distance/480)!==this.section){this.section=Math.floor(p.distance/480);this.items=obstacles(seed,p.distance);}
+    const rewardPosition=this.point(this.lane,16+this.distance-this.cameraDistance);
+    if((p.coins??0)>this.collectedCoins||(p.flags??0)>this.collectedFlags){
+      this.rewards.push({life:1,flag:(p.flags??0)>this.collectedFlags,x:rewardPosition.x,y:rewardPosition.y-this.height*.12});
+      this.collectedCoins=Math.max(this.collectedCoins,p.coins??0);this.collectedFlags=Math.max(this.collectedFlags,p.flags??0);
+    }
+    this.rewards=this.rewards.filter(r=>(r.life-=dt*.9)>0);
     if(p.hits>this.hits&&!this.reduced)this.impact=1;
     if(this.previousJump>0&&p.jump===0&&p.stun===0&&!this.reduced)this.landing=1;
     this.previousJump=p.jump;
     this.landing=Math.max(0,this.landing-dt*4);this.impact=Math.max(0,this.impact-dt*3);
     if(active&&!this.reduced)this.motionTime+=dt;
     if(p.hits!==this.hits||Math.abs(this.distance-p.distance)>8){this.distance=p.distance;this.hits=p.hits;}else this.distance+=(p.distance-this.distance)*(1-Math.exp(-dt*19));
+    // Runner and camera have separate world positions. The runner leaves the
+    // foreground first; the follow camera eases forward behind them.
+    if(p.distance<this.cameraDistance)this.cameraDistance=Math.max(0,p.distance-13);
+    if(active)this.cameraDistance+=(Math.max(0,this.distance-13)-this.cameraDistance)*(1-Math.exp(-dt*3));
     this.lane+=(p.lane-this.lane)*(1-Math.exp(-dt*17));
     c.clearRect(0,0,w,h);
     if(mode==='lobby'){
@@ -65,42 +93,95 @@ export class Arena {
     // The environment is painted; the road marks, sprites and particles move in perspective.
     c.save();
     if(this.impact>0)c.translate(Math.sin(time*.065)*this.impact*5,Math.cos(time*.08)*this.impact*3);
-    // Small camera drift adds life while keeping the collision track anchored.
-    const drift=this.reduced?0:(this.lane-1)*-3;
-    c.drawImage(this.images.street,-6+drift,-4,w+12,h+8);
-    c.save();c.beginPath();c.moveTo(w*.495,h*.443);c.lineTo(w*.505,h*.443);c.lineTo(w*1.04,h);c.lineTo(-w*.04,h);c.closePath();c.clip();
-    const road=c.createLinearGradient(0,h*.443,0,h);road.addColorStop(0,'rgba(244,220,170,0)');road.addColorStop(.2,'rgba(234,199,145,.25)');road.addColorStop(1,'rgba(222,181,129,.42)');c.fillStyle=road;c.fillRect(0,h*.443,w,h*.557);
-    const travel=this.distance;
-    for(let i=0;i<28;i++){
-      const z=i*4.7-travel%4.7,a=this.point(-.62,z),b=this.point(2.62,z);
-      c.strokeStyle=`rgba(136,98,62,${.03+a.s*.10})`;c.lineWidth=Math.max(.5,a.s*1.3);c.beginPath();c.moveTo(a.x,a.y);c.quadraticCurveTo(w*.48,a.y-2*a.s,b.x,b.y);c.stroke();
-      for(let j=0;j<6;j++){const lane=-.5+j*.6+(i%2)*.3;const v=this.point(lane,z),u=this.point(lane,z+4.7);c.beginPath();c.moveTo(v.x,v.y);c.lineTo(u.x,u.y);c.stroke();}
+    // Orthographic overhead track: the artwork scrolls, never zooms.
+    const travel=this.cameraDistance, street=this.images.overhead;
+    // Draw the complete orthographic illustration at its natural aspect ratio.
+    const tileHeight=w*street.height/street.width;
+    const spacing=tileHeight*.82;
+    const offset=(travel*h/110)%spacing;
+    c.fillStyle='#e5ca98';c.fillRect(0,0,w,h);
+    for(let y=offset-spacing*2;y<h;y+=spacing){
+      c.drawImage(this.streetLayer!,0,y,w,tileHeight);
     }
-    // Subtle route guides keep the three lanes readable without painting over the artwork.
-    for(const lane of [.5,1.5])for(let i=0;i<15;i++){const z=i*8-travel%8;const a=this.point(lane,z),b=this.point(lane,z+3);c.strokeStyle='rgba(255,251,224,.45)';c.lineWidth=Math.max(1,a.s*2);c.beginPath();c.moveTo(a.x,a.y);c.lineTo(b.x,b.y);c.stroke();}
-    c.restore();
+    const district=theme(p.distance);
+    // Each district gets a light, painted atmosphere while preserving the
+    // same clear road and fixed-size obstacle view.
+    if(district.label==='FEIRA DAS FLORES'){
+      c.save();c.globalAlpha=.22;
+      for(let y=45;y<h;y+=150){for(const side of [0,1]){c.fillStyle=side?'#ef7882':'#ffc35b';c.beginPath();c.moveTo(side?w*.88:w*.12,y);c.lineTo(side?w:w*.02,y+18);c.lineTo(side?w*.88:w*.12,y+36);c.closePath();c.fill();}}
+      c.restore();
+    }else if(district.label==='ORLA AZUL'){
+      c.save();c.globalAlpha=.2;c.fillStyle='#52c8de';c.fillRect(0,0,w*.105,h);c.fillRect(w*.895,0,w*.105,h);
+      c.strokeStyle='#dcfbff';c.lineWidth=2;for(let y=15;y<h;y+=25){c.beginPath();c.moveTo(0,y);c.quadraticCurveTo(w*.05,y-8,w*.10,y);c.moveTo(w*.90,y);c.quadraticCurveTo(w*.95,y-8,w,y);c.stroke();}c.restore();
+    }
     const drawn:{z:number;draw:()=>void}[]=[];
-    const target=p.distance<HALF?HALF:FINISH;
-    if(target-travel<108){const z=target-travel+16;drawn.push({z,draw:()=>{const v=this.point(1,z);this.shadow(v.x,v.y,w*.07*v.s);const sz=w*.40*v.s;c.save();c.translate(v.x,v.y);c.rotate(Math.sin(this.motionTime*4)*.035);this.sprite(this.images.props,2,p.distance<HALF?(team===0?0:1):(team===0?1:0),3,2,0,0,sz,sz);c.restore();}});}
-    for(const o of this.items){const z=o.d-travel+16;if(z< -16||z>112)continue;drawn.push({z,draw:()=>{const v=this.point(o.lane,z),sz=w*(o.high?.40:.38)*v.s;c.save();c.globalAlpha=Math.min(1,(112-z)/12,Math.max(0,(z+16)/12));this.shadow(v.x,v.y,sz*.31);this.sprite(this.images.props,o.high?1:0,team===0?0:1,3,2,v.x,v.y,sz,sz);c.restore();}});}
-    const position=this.point(this.lane,16);
-    const jump=p.jump>0?Math.sin(Math.PI*(1-p.jump/.82))*h*.125:0;
+    for(const item of pickups(seed,p.distance)){
+      const z=item.d-travel+16;if(item.d<=p.distance||z>108||z<0)continue;
+      drawn.push({z,draw:()=>{
+        const v=this.point(item.lane,z),size=Math.min(w*.17,h*.11);
+        c.save();c.globalAlpha=Math.min(1,(110-z)/10);
+        this.shadow(v.x,v.y,size*.28,.12);
+        if(item.flag){
+          const bob=this.reduced?0:Math.sin(time*.004+item.d)*3;
+          c.save();c.translate(v.x,v.y+bob);c.rotate(this.reduced?0:Math.sin(time*.003)*.045);
+          this.sprite(this.images.props,2,team===0?0:1,3,2,0,0,size,size);c.restore();
+        }else{
+          const radius=Math.min(w*.029,19),angle=this.reduced?0:time*.0024+item.d;
+          const turn=Math.max(.17,Math.abs(Math.cos(angle)));
+          const bob=this.reduced?0:Math.sin(time*.003+item.d)*2;
+          c.translate(v.x,v.y-radius*1.4+bob);
+          // Warm rim, engraved centre and moving specular highlight.
+          c.save();c.scale(turn,1);
+          for(let depth=3;depth>=0;depth--){
+            c.fillStyle=depth?'#a96816':'#f6bc37';c.beginPath();c.ellipse(depth,1,radius,radius,0,0,Math.PI*2);c.fill();
+          }
+          const gold=c.createLinearGradient(-radius,-radius,radius,radius);
+          gold.addColorStop(0,'#fff6ba');gold.addColorStop(.3,'#ffdc63');gold.addColorStop(.65,'#d9901d');gold.addColorStop(1,'#ffdf70');
+          c.fillStyle=gold;c.beginPath();c.arc(0,0,radius*.91,0,Math.PI*2);c.fill();
+          c.strokeStyle='#9b6018';c.lineWidth=1.3;c.beginPath();c.arc(0,0,radius*.70,0,Math.PI*2);c.stroke();
+          c.strokeStyle='#fff1a0';c.lineWidth=1;c.beginPath();c.arc(-.5,-.5,radius*.74,Math.PI,Math.PI*1.85);c.stroke();
+          // Engraved flag emblem ties currency to the game's objective.
+          c.strokeStyle='#a36616';c.lineWidth=2;c.beginPath();c.moveTo(-radius*.23,radius*.43);c.lineTo(-radius*.23,-radius*.4);c.stroke();
+          this.path([[-radius*.18,-radius*.4],[radius*.36,-radius*.3],[radius*.16,-radius*.04],[-radius*.18,-radius*.12]],'#b57720');
+          c.strokeStyle='rgba(255,255,225,.85)';c.lineWidth=1.7;c.beginPath();c.arc(0,0,radius*.88,angle,angle+.7);c.stroke();
+          c.restore();
+        }
+        c.restore();
+      }});
+    }
+    for(const o of this.items){const z=o.d-travel+16;if(z< -16||z>112)continue;drawn.push({z,draw:()=>{const v=this.point(o.lane,z),sz=Math.min(w*.22,h*.14);c.save();c.globalAlpha=Math.min(1,(112-z)/12,Math.max(0,(z+16)/12));this.shadow(v.x,v.y,sz*.31);this.sprite(this.images.props,o.high?1:0,team===0?0:1,3,2,v.x,v.y,sz,sz);c.restore();}});}
+    const runnerDepth=16+this.distance-this.cameraDistance;
+    const position=this.point(this.lane,runnerDepth);
+    const runnerScale=position.s/this.point(1,16).s;
+    const jump=p.jump>0?Math.sin(Math.PI*(1-p.jump/.82))*h*.065:0;
     if(active&&p.stun===0&&!this.reduced)this.phase+=dt*8;
-    drawn.push({z:16,draw:()=>{
-      const size=Math.min(w*.40,h*.255),sw=size*.75;
+    drawn.push({z:runnerDepth,draw:()=>{
+      const size=Math.min(w*.28,h*.16)*runnerScale,sw=size*.75;
       this.shadow(position.x,position.y,sw*.25*(1-jump/h),.20);
       if(p.stun>0)c.globalAlpha=.65;
       // The fourth atlas pose is a jump, not a running stride.
       const frame=p.jump>0?3:active&&p.stun===0&&!this.reduced?[0,1,2,1][Math.floor(this.phase)%4]:1;
       const stride=active&&p.stun===0&&p.jump===0&&!this.reduced?Math.sin(this.phase*Math.PI):0;
-      const bob=-Math.abs(stride)*3;
-      c.save();c.translate(position.x,position.y-jump+bob);c.rotate((p.lane-this.lane)*.14+stride*.015);
-      c.scale(1+this.landing*.09,1-this.landing*.10);
-      this.sprite(this.images.runners,frame,team,4,2,0,0,sw,size);
-      if(p.distance>=HALF){const flagSize=size*.73;c.save();c.translate(sw*.43,-size*.42);c.rotate(Math.sin(this.motionTime*9)*.07);this.sprite(this.images.props,2,team===0?0:1,3,2,0,0,flagSize,flagSize);c.restore();}
+      const bob=-Math.abs(stride)*1.5;
+      c.save();c.translate(position.x,position.y-jump+bob);c.rotate((p.lane-this.lane)*.14+stride*.009);
+      c.scale(1+this.landing*.06+Math.abs(stride)*.012,1-this.landing*.07-Math.abs(stride)*.008);
+      // The first two characters use the painted originals; the two premium
+      // unlocks use the same illustrated pose set with their own color grade.
+      c.filter=skin===2?'hue-rotate(260deg) saturate(1.2)':'none';
+      this.sprite(this.images.runners,frame,skin%2,4,2,0,0,sw,size);
+      c.filter='none';
       c.restore();c.globalAlpha=1;
     }});
     drawn.sort((a,b)=>b.z-a.z).forEach(item=>item.draw());
+    for(const reward of this.rewards){
+      const age=1-reward.life,rise=this.reduced?0:age*42;
+      c.save();c.globalAlpha=Math.min(1,reward.life*3);c.textAlign='center';c.font='900 '+(reward.flag?22:17)+'px Trebuchet MS';
+      c.lineWidth=4;c.strokeStyle='#664523';c.fillStyle=reward.flag?'#fff5ae':'#ffe393';
+      const label=reward.flag?'BANDEIRA! +1.000':'+50';
+      c.strokeText(label,reward.x,reward.y-rise);c.fillText(label,reward.x,reward.y-rise);
+      if(!this.reduced)for(let i=0;i<8;i++){const a=i*Math.PI/4,r=age*45;c.fillStyle=i%2?'#fff3bb':'#ffc84d';c.beginPath();c.arc(reward.x+Math.cos(a)*r,reward.y+Math.sin(a)*r-rise,Math.max(.5,reward.life*3),0,Math.PI*2);c.fill();}
+      c.restore();
+    }
     if(this.landing>0){const t=1-this.landing;c.strokeStyle=`rgba(255,238,195,${this.landing*.55})`;c.lineWidth=2;c.beginPath();c.ellipse(position.x,position.y,w*(.035+t*.10),h*(.004+t*.015),0,0,Math.PI*2);c.stroke();}
     if(this.impact>0){for(let i=0;i<10;i++){const a=i*Math.PI/5,t=1-this.impact;c.fillStyle=`rgba(255,221,99,${this.impact})`;c.beginPath();c.arc(position.x+Math.cos(a)*t*w*.18,position.y-h*.1+Math.sin(a)*t*h*.10,2+this.impact*3,0,Math.PI*2);c.fill();}}
     if(active&&p.stun===0&&p.jump===0&&!this.reduced){

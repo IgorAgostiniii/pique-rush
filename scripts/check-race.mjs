@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict';
 import {runner,newRace,advancePlayer,advance,obstacles,FINISH} from '../lib/race.ts';
 const p=runner('Teste',0);p.distance=33;p.lane=1;
-advancePlayer(p,.2,[{d:34,lane:1,high:false}]);assert.equal(p.hits,1);assert.equal(p.distance,0);
+advancePlayer(p,.2,[{d:34,lane:1,high:false}]);assert.equal(p.hits,1);assert.equal(p.distance,34);
 const j=runner('Pulo',0);j.distance=33;j.jump=.5;
 advancePlayer(j,.2,[{d:34,lane:1,high:false}]);assert.equal(j.hits,0);assert(j.distance>34);
 const tall=runner('Alto',0);tall.distance=33;tall.jump=.5;
 advancePlayer(tall,.2,[{d:34,lane:1,high:true}]);assert.equal(tall.hits,1);
 const carrying=runner('Bandeira',0);carrying.distance=300;
-advancePlayer(carrying,.2,[{d:301,lane:1,high:true}]);assert.equal(carrying.distance,0);
+advancePlayer(carrying,.2,[{d:301,lane:1,high:true}]);assert.equal(carrying.distance,301);
 const race=newRace('Azul',1000);race.phase='playing';race.start=2000;race.updated=1000;race.players[1]=runner('Vermelho',1000);
 advance(race,1500);assert.equal(race.players[0].distance,0);
-race.players[0].distance=FINISH-1;race.players[1].distance=FINISH-3;advance(race,2200);assert.equal(race.winner,0);assert.equal(race.phase,'done');
+race.players[0].distance=FINISH-1;race.players[1].distance=FINISH-3;advance(race,2200);assert.equal(race.winner,null);assert.equal(race.phase,'playing');assert(race.players[0].distance>FINISH);
 const off=newRace('Azul',0);off.phase='playing';advance(off,6000);assert.equal(off.paused,true);assert.equal(off.players[0].distance,0);
 off.players.forEach(p=>p.seen=6000);advance(off,6001);assert.equal(off.paused,false);assert.equal(off.start,9001);
 assert.deepEqual(obstacles(123),obstacles(123));assert.notDeepEqual(obstacles(123),obstacles(124));
 console.log('Passed: collision, jump, tall blocks, flag loss, countdown, winner, disconnect/reconnect, identical tracks.');
+
+const near=obstacles(123,479),far=obstacles(123,481);assert.deepEqual(near.filter(o=>o.d>=480&&o.d<960),far.filter(o=>o.d>=480&&o.d<960));assert(obstacles(123,5000).some(o=>o.d>5000));
+const lost=newRace('Teste',0);lost.phase='playing';lost.start=0;lost.players.forEach(p=>p.seen=100);lost.players[0].hits=1;advance(lost,100);assert.equal(lost.phase,'done');assert.equal(lost.winner,1);
+console.log('Passed: endless distance, stable segment boundaries, obstacles beyond 5000m, collision ends race.');

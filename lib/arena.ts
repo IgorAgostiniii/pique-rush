@@ -1,12 +1,19 @@
 import * as T from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { FINISH, HALF, obstacles, type Runner } from './race';
+import { obstacles, type Runner } from './race';
+import frames from './art-frames.json';
 
 type Avatar = {root:T.Group;body:T.Group;arms:T.Group[];legs:T.Group[];flag:T.Group;cap:T.Mesh;shirt:T.Mesh;pack:T.Mesh};
 const BLUE=0x2586fb, RED=0xff4c63;
 
 /** A small, self-contained scene: shared geometry, capped resolution, no downloaded assets. */
 export class Arena {
+  readonly ready:Promise<void>;
+  private paintedRunner:T.Sprite;
+  private runnerTexture:T.Texture;
+  private lobbyScene=new T.Scene();
+  private section=-1;
+  private footShadow=new T.Mesh(new T.CircleGeometry(.65,24),new T.MeshBasicMaterial({color:0x273746,transparent:true,opacity:.22,depthWrite:false}));
   private renderer:T.WebGLRenderer;
   private scene=new T.Scene();
   private camera=new T.PerspectiveCamera(48,1,.1,170);
@@ -37,6 +44,11 @@ export class Arena {
   private motionReduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   constructor(private canvas:HTMLCanvasElement){
+    const loader=new T.TextureLoader();
+    this.runnerTexture=new T.Texture();
+    this.paintedRunner=new T.Sprite(new T.SpriteMaterial({transparent:true,depthWrite:false}));
+    this.paintedRunner.center.set(.5,0);this.scene.add(this.paintedRunner);this.footShadow.rotation.x=-Math.PI/2;this.footShadow.scale.y=.65;this.scene.add(this.footShadow);
+    this.ready=Promise.all([loader.loadAsync('/art/runners.webp'),loader.loadAsync('/art/duel.webp')]).then(([runners,duel])=>{runners.colorSpace=T.SRGBColorSpace;duel.colorSpace=T.SRGBColorSpace;this.runnerTexture=runners;(this.paintedRunner.material as T.SpriteMaterial).map=runners;this.paintedRunner.material.needsUpdate=true;this.lobbyScene.background=duel;});
     this.renderer=new T.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:'high-performance'});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio,1.6));
     this.renderer.shadowMap.enabled=true;
@@ -135,10 +147,10 @@ export class Arena {
     const flag=this.flag(color===BLUE?RED:BLUE);flag.position.set(.57,.64,.25);flag.scale.setScalar(.65);root.add(flag);flag.visible=false;
     return {root,body,arms,legs,flag,cap,shirt,pack};
   }
-  private setTrack(seed:number,team:number){
+  private setTrack(seed:number,team:number,distance:number){
     this.seed=seed;this.team=team;this.obstaclesGroup.clear();this.obstacleNodes=[];
     const color=team===0?RED:BLUE;
-    for(const o of obstacles(seed)){const g=new T.Group();
+    for(const o of obstacles(seed,distance)){const g=new T.Group();
       if(o.high){this.box(g,[1.8,2.6,1.3],[0,1.3,0],color,true);this.box(g,[1.9,.17,1.38],[0,2.55,0],0xfff0d1,true);this.box(g,[1.1,.12,.06],[0,1.45,.67],0xffe290);this.box(g,[.14,1.18,.065],[0,1.46,.68],0xffe290);this.box(g,[1.9,.14,1.4],[0,.1,0],0x344e66,true);}
       else {for(const side of [-1,1]){this.box(g,[.18,.84,.2],[side*.72,.42,0],0xf9ebca,true);this.box(g,[.45,.12,.8],[side*.72,.06,0],0x374f63,true);}this.box(g,[1.9,.55,.28],[0,.7,0],color,true);for(let i=0;i<4;i++){const stripe=this.box(g,[.17,.49,.3],[-.63+i*.42,.7,.01],0xfff3d8);stripe.rotation.z=-.4;}}
       g.position.x=(o.lane-1)*2.8;this.obstaclesGroup.add(g);this.obstacleNodes.push({group:g,d:o.d});
@@ -147,8 +159,9 @@ export class Arena {
   private fit(){const {width,height}=this.canvas.getBoundingClientRect();if(width===this.width&&height===this.height)return;this.width=width;this.height=height;this.renderer.setSize(width,height,false);this.camera.aspect=width/height;this.camera.updateProjectionMatrix();}
   render(p:Runner,seed:number,team:number,time:number,mode:'lobby'|'waiting'|'playing'|'done',active:boolean){
     const dt=Math.min(.05,(time-this.lastTime)/1000||.016);this.lastTime=time;
-    if(this.seed!==seed||this.team!==team)this.setTrack(seed,team);
+    if(this.seed!==seed||this.team!==team||this.section!==Math.floor(p.distance/480)){this.section=Math.floor(p.distance/480);this.setTrack(seed,team,p.distance);}
     const lobby=mode==='lobby',small=this.width<700;
+    if(lobby){this.renderer.render(this.lobbyScene,this.camera);return;}
     const fieldOfView=small&&!lobby?66:48;
     if(this.camera.fov!==fieldOfView){this.camera.fov=fieldOfView;this.camera.updateProjectionMatrix();}
     if(p.hits!==this.lastHits||Math.abs(this.displayDistance-p.distance)>8||mode==='waiting'){this.displayDistance=p.distance;this.lastHits=p.hits;}else this.displayDistance=T.MathUtils.damp(this.displayDistance,p.distance,18,dt);
@@ -158,8 +171,7 @@ export class Arena {
     this.bunting.forEach((g,i)=>g.position.z=12-((36+i*42-distance)%168+168)%168);
     for(const item of this.obstacleNodes){item.group.position.z=distance-item.d;item.group.visible=item.group.position.z<5&&item.group.position.z>-130;}
     this.obstaclesGroup.visible=!lobby;
-    const target=p.distance<HALF?HALF:FINISH;this.targetFlag.position.set(0,0,-(target-distance));this.targetFlag.visible=!lobby&&target-distance<120;
-    (this.targetFlag.getObjectByName('cloth') as T.Mesh).material=this.mat(p.distance<HALF?(team===0?RED:BLUE):(team===0?BLUE:RED));
+    this.targetFlag.visible=false;
     this.runner.root.visible=lobby||team===0;this.friend.root.visible=lobby||team===1;
     if(lobby){
       this.camera.position.set(small?0:4.2,small?3.8:4.5,small?10:11.5);this.camera.lookAt(small?0:-1.7,small?1.75:1.2,0);
@@ -178,14 +190,26 @@ export class Arena {
       avatar.body.position.y=active&&p.jump===0?Math.abs(Math.sin(t))*.08:0;
       avatar.arms.forEach((arm,i)=>{arm.rotation.x=p.jump>0?-1.1:stride*(i===0?1:-1);arm.rotation.z=i===0?.13:-.13;});
       avatar.legs.forEach((leg,i)=>leg.rotation.x=p.jump>0?(i===0?-.65:.6):stride*(i===0?-1:1));
-      avatar.flag.visible=p.distance>=HALF;
+      avatar.flag.visible=false;
       avatar.root.visible=p.stun===0||Math.floor(time/90)%2===0;
 
     }
+    this.runner.root.visible=false;this.friend.root.visible=false;
+    const index=p.jump>0?3:active&&p.stun===0&&!this.motionReduced?[0,1,2,1][Math.floor(time*.008)%4]:1;
+    const crop=frames.runners[team*4+index];
+    this.runnerTexture.repeat.set(crop.w/1536,crop.h/1024);
+    this.runnerTexture.offset.set(crop.x/1536,1-(crop.y+crop.h)/1024);
+    const hop=p.jump>0?Math.sin(Math.PI*(1-p.jump/.82))*1.9:0;
+    this.paintedRunner.position.set(this.laneX,hop,0);this.footShadow.position.set(this.laneX,.025,0);this.footShadow.material.opacity=.22-hop*.06;
+    this.paintedRunner.scale.set(crop.w/481*2.7,crop.h/481*2.7,1);
+    this.paintedRunner.material.rotation=(this.laneX-(p.lane-1)*2.8)*-.06;
+    // Camera follows the runner laterally; nearby scenery travels past faster than the horizon.
+    this.camera.position.x=this.laneX*.22;
+    this.camera.lookAt(this.laneX*.12,1,-22);
     this.confetti.forEach((c,i)=>{c.visible=mode==='done';if(c.visible){const t=time*.0006;c.position.set(Math.sin(i*12.7)*5,7-((t+i*.19)%7),Math.cos(i*3.3)*5-1);c.rotation.set(t+i,t*2+i, t*.7);}});
     this.runner.flag.rotation.y=Math.sin(time*.004)*.08;this.friend.flag.rotation.y=Math.cos(time*.004)*.08;
     this.renderer.render(this.scene,this.camera);
   }
-  dispose(){this.resize.disconnect();const geometries=new Set<T.BufferGeometry>();this.scene.traverse(o=>{if(o instanceof T.Mesh)geometries.add(o.geometry);});geometries.forEach(g=>g.dispose());this.materials.forEach(m=>m.dispose());this.renderer.dispose();}
+  dispose(){this.resize.disconnect();const geometries=new Set<T.BufferGeometry>();this.scene.traverse(o=>{if(o instanceof T.Mesh)geometries.add(o.geometry);});geometries.forEach(g=>g.dispose());this.materials.forEach(m=>m.dispose());this.runnerTexture.dispose();(this.lobbyScene.background as T.Texture)?.dispose();this.paintedRunner.material.dispose();this.footShadow.material.dispose();this.renderer.dispose();}
 }
 
